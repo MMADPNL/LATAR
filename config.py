@@ -4,7 +4,7 @@ import os
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
 # آیدی عددی مالک ربات را در Environment Variables با نام OWNER_ID قرار بده
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID = 8552447077
 
 # کانال/گروه اجباری
 FORCE_CHAT = "@LATAR_tek"
