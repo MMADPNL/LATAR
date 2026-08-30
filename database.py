@@ -1,11 +1,13 @@
 import os
 import sqlite3
 from contextlib import contextmanager
+
 from config import DATABASE_PATH
 
 
 def _ensure_directory():
     directory = os.path.dirname(DATABASE_PATH)
+
     if directory:
         os.makedirs(directory, exist_ok=True)
 
@@ -14,25 +16,28 @@ def _ensure_directory():
 def get_db():
     _ensure_directory()
 
-    conn = sqlite3.connect(
+    db = sqlite3.connect(
         DATABASE_PATH,
         timeout=30,
-        isolation_level=None,
+        isolation_level=None
     )
-    conn.row_factory = sqlite3.Row
+
+    db.row_factory = sqlite3.Row
 
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=FULL")
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=30000")
-        yield conn
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("PRAGMA busy_timeout=30000")
+
+        yield db
+
     finally:
-        conn.close()
+        db.close()
 
 
 def init_db():
     with get_db() as db:
+
         db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -54,8 +59,7 @@ def init_db():
                 balance_after INTEGER NOT NULL,
                 tx_type TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(user_id)
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -66,12 +70,10 @@ def init_db():
                 message_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
                 game_type TEXT NOT NULL,
-                bet INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'pending',
-                result TEXT,
-                payout INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                finished_at TEXT
+                amount INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'finished',
+                result TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -80,6 +82,11 @@ def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )
+        """)
+
+        db.execute("""
+            INSERT OR IGNORE INTO settings(key, value)
+            VALUES('bot_enabled', '1')
         """)
 
         db.execute("""
@@ -92,24 +99,26 @@ def init_db():
             ON transactions(user_id)
         """)
 
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_games_user
-            ON games(user_id)
-        """)
 
-        db.execute("""
-            INSERT OR IGNORE INTO settings(key, value)
-            VALUES('bot_enabled', '1')
-        """)
-
+# =========================================================
+# USERS
+# =========================================================
 
 def register_user(user_id, first_name="", username=""):
+
     user_id = int(user_id)
 
     with get_db() as db:
+
         db.execute("""
-            INSERT INTO users(user_id, first_name, username, balance)
+            INSERT INTO users(
+                user_id,
+                first_name,
+                username,
+                balance
+            )
             VALUES(?, ?, ?, 0)
+
             ON CONFLICT(user_id) DO UPDATE SET
                 first_name=excluded.first_name,
                 username=excluded.username,
@@ -117,12 +126,14 @@ def register_user(user_id, first_name="", username=""):
         """, (
             user_id,
             first_name or "",
-            username or "",
+            username or ""
         ))
 
 
 def get_user(user_id):
+
     with get_db() as db:
+
         return db.execute("""
             SELECT *
             FROM users
@@ -131,15 +142,39 @@ def get_user(user_id):
 
 
 def get_balance(user_id):
+
     with get_db() as db:
+
         row = db.execute("""
             SELECT balance
             FROM users
             WHERE user_id=?
         """, (int(user_id),)).fetchone()
 
-        return int(row["balance"]) if row else 0
+        if row is None:
+            return 0
 
+        return int(row["balance"])
+
+
+def get_all_users():
+
+    with get_db() as db:
+
+        return db.execute("""
+            SELECT
+                user_id,
+                first_name,
+                username,
+                balance
+            FROM users
+            ORDER BY first_name COLLATE NOCASE ASC
+        """).fetchall()
+
+
+# =========================================================
+# BALANCE
+# =========================================================
 
 def change_balance(
     user_id,
@@ -148,6 +183,7 @@ def change_balance(
     tx_key,
     description=""
 ):
+
     user_id = int(user_id)
     amount = int(amount)
     tx_key = str(tx_key)
@@ -155,13 +191,15 @@ def change_balance(
     if not tx_key:
         return {
             "success": False,
-            "reason": "invalid_tx_key",
+            "reason": "invalid_key"
         }
 
     with get_db() as db:
+
         db.execute("BEGIN IMMEDIATE")
 
         try:
+
             old_tx = db.execute("""
                 SELECT *
                 FROM transactions
@@ -169,12 +207,15 @@ def change_balance(
             """, (tx_key,)).fetchone()
 
             if old_tx:
+
                 db.execute("COMMIT")
+
                 return {
                     "success": True,
                     "duplicate": True,
-                    "balance": int(old_tx["balance_after"]),
-                    "transaction_id": int(old_tx["id"]),
+                    "balance": int(
+                        old_tx["balance_after"]
+                    )
                 }
 
             user = db.execute("""
@@ -184,32 +225,49 @@ def change_balance(
             """, (user_id,)).fetchone()
 
             if user is None:
+
                 db.execute("""
-                    INSERT INTO users(user_id, balance)
-                    VALUES(?, 0)
+                    INSERT INTO users(
+                        user_id,
+                        first_name,
+                        username,
+                        balance
+                    )
+                    VALUES(?, '', '', 0)
                 """, (user_id,))
+
                 old_balance = 0
+
             else:
-                old_balance = int(user["balance"])
+
+                old_balance = int(
+                    user["balance"]
+                )
 
             new_balance = old_balance + amount
 
             if new_balance < 0:
+
                 db.execute("ROLLBACK")
+
                 return {
                     "success": False,
                     "reason": "insufficient_balance",
-                    "balance": old_balance,
+                    "balance": old_balance
                 }
 
             db.execute("""
                 UPDATE users
-                SET balance=?,
+                SET
+                    balance=?,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE user_id=?
-            """, (new_balance, user_id))
+            """, (
+                new_balance,
+                user_id
+            ))
 
-            cur = db.execute("""
+            db.execute("""
                 INSERT INTO transactions(
                     tx_key,
                     user_id,
@@ -227,7 +285,7 @@ def change_balance(
                 old_balance,
                 new_balance,
                 tx_type,
-                description,
+                description
             ))
 
             db.execute("COMMIT")
@@ -235,11 +293,11 @@ def change_balance(
             return {
                 "success": True,
                 "duplicate": False,
-                "balance": new_balance,
-                "transaction_id": cur.lastrowid,
+                "balance": new_balance
             }
 
         except Exception:
+
             db.execute("ROLLBACK")
             raise
 
@@ -248,22 +306,24 @@ def add_balance(
     user_id,
     amount,
     tx_key,
-    description="افزایش امتیاز"
+    description="شارژ"
 ):
+
     amount = int(amount)
 
     if amount <= 0:
+
         return {
             "success": False,
-            "reason": "invalid_amount",
+            "reason": "invalid_amount"
         }
 
     return change_balance(
-        user_id,
-        amount,
-        "credit",
-        tx_key,
-        description,
+        user_id=user_id,
+        amount=amount,
+        tx_type="credit",
+        tx_key=tx_key,
+        description=description
     )
 
 
@@ -271,24 +331,30 @@ def withdraw_balance(
     user_id,
     amount,
     tx_key,
-    description="کاهش امتیاز"
+    description="کسر"
 ):
+
     amount = int(amount)
 
     if amount <= 0:
+
         return {
             "success": False,
-            "reason": "invalid_amount",
+            "reason": "invalid_amount"
         }
 
     return change_balance(
-        user_id,
-        -amount,
-        "debit",
-        tx_key,
-        description,
+        user_id=user_id,
+        amount=-amount,
+        tx_type="debit",
+        tx_key=tx_key,
+        description=description
     )
 
+
+# =========================================================
+# TRANSFER
+# =========================================================
 
 def transfer_balance(
     sender_id,
@@ -296,47 +362,50 @@ def transfer_balance(
     amount,
     transfer_key
 ):
+
     sender_id = int(sender_id)
     receiver_id = int(receiver_id)
     amount = int(amount)
 
     if sender_id == receiver_id:
+
         return {
             "success": False,
-            "reason": "self_transfer",
+            "reason": "self_transfer"
         }
 
     if amount <= 0:
+
         return {
             "success": False,
-            "reason": "invalid_amount",
+            "reason": "invalid_amount"
         }
 
-    transfer_key = str(transfer_key)
+    send_key = f"{transfer_key}:send"
+    receive_key = f"{transfer_key}:receive"
 
     with get_db() as db:
+
         db.execute("BEGIN IMMEDIATE")
 
         try:
-            existing = db.execute("""
+
+            duplicate = db.execute("""
                 SELECT *
                 FROM transactions
                 WHERE tx_key=?
-            """, (transfer_key + ":send",)).fetchone()
+            """, (send_key,)).fetchone()
 
-            if existing:
-                sender = db.execute("""
-                    SELECT balance
-                    FROM users
-                    WHERE user_id=?
-                """, (sender_id,)).fetchone()
+            if duplicate:
 
                 db.execute("COMMIT")
 
                 return {
                     "success": True,
                     "duplicate": True,
-                    "sender_balance": int(sender["balance"]) if sender else 0,
+                    "sender_balance": int(
+                        duplicate["balance_after"]
+                    )
                 }
 
             sender = db.execute("""
@@ -346,20 +415,26 @@ def transfer_balance(
             """, (sender_id,)).fetchone()
 
             if sender is None:
+
                 db.execute("ROLLBACK")
+
                 return {
                     "success": False,
-                    "reason": "sender_not_found",
+                    "reason": "sender_not_found"
                 }
 
-            sender_balance = int(sender["balance"])
+            sender_balance = int(
+                sender["balance"]
+            )
 
             if sender_balance < amount:
+
                 db.execute("ROLLBACK")
+
                 return {
                     "success": False,
                     "reason": "insufficient_balance",
-                    "balance": sender_balance,
+                    "balance": sender_balance
                 }
 
             db.execute("""
@@ -378,44 +453,38 @@ def transfer_balance(
                 WHERE user_id=?
             """, (receiver_id,)).fetchone()
 
-            receiver_balance = int(receiver["balance"])
+            receiver_balance = int(
+                receiver["balance"]
+            )
 
-            new_sender = sender_balance - amount
-            new_receiver = receiver_balance + amount
+            new_sender = (
+                sender_balance - amount
+            )
+
+            new_receiver = (
+                receiver_balance + amount
+            )
 
             db.execute("""
                 UPDATE users
-                SET balance=?,
+                SET
+                    balance=?,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE user_id=?
-            """, (new_sender, sender_id))
-
-            db.execute("""
-                UPDATE users
-                SET balance=?,
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE user_id=?
-            """, (new_receiver, receiver_id))
-
-            db.execute("""
-                INSERT INTO transactions(
-                    tx_key,
-                    user_id,
-                    amount,
-                    balance_before,
-                    balance_after,
-                    tx_type,
-                    description
-                )
-                VALUES(?, ?, ?, ?, ?, ?, ?)
             """, (
-                transfer_key + ":send",
-                sender_id,
-                -amount,
-                sender_balance,
                 new_sender,
-                "transfer_out",
-                f"انتقال امتیاز به {receiver_id}",
+                sender_id
+            ))
+
+            db.execute("""
+                UPDATE users
+                SET
+                    balance=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE user_id=?
+            """, (
+                new_receiver,
+                receiver_id
             ))
 
             db.execute("""
@@ -430,13 +499,34 @@ def transfer_balance(
                 )
                 VALUES(?, ?, ?, ?, ?, ?, ?)
             """, (
-                transfer_key + ":receive",
+                send_key,
+                sender_id,
+                -amount,
+                sender_balance,
+                new_sender,
+                "transfer_out",
+                f"انتقال به {receiver_id}"
+            ))
+
+            db.execute("""
+                INSERT INTO transactions(
+                    tx_key,
+                    user_id,
+                    amount,
+                    balance_before,
+                    balance_after,
+                    tx_type,
+                    description
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+            """, (
+                receive_key,
                 receiver_id,
                 amount,
                 receiver_balance,
                 new_receiver,
                 "transfer_in",
-                f"دریافت امتیاز از {sender_id}",
+                f"دریافت از {sender_id}"
             ))
 
             db.execute("COMMIT")
@@ -445,54 +535,72 @@ def transfer_balance(
                 "success": True,
                 "duplicate": False,
                 "sender_balance": new_sender,
-                "receiver_balance": new_receiver,
+                "receiver_balance": new_receiver
             }
 
         except Exception:
+
             db.execute("ROLLBACK")
             raise
 
 
-def get_all_users():
-    with get_db() as db:
-        return db.execute("""
-            SELECT user_id, first_name, username, balance
-            FROM users
-            ORDER BY first_name COLLATE NOCASE ASC
-        """).fetchall()
-
+# =========================================================
+# SETTINGS
+# =========================================================
 
 def get_setting(key, default=None):
+
     with get_db() as db:
+
         row = db.execute("""
             SELECT value
             FROM settings
             WHERE key=?
         """, (str(key),)).fetchone()
 
-        return row["value"] if row else default
+        if row is None:
+            return default
+
+        return row["value"]
 
 
 def set_setting(key, value):
+
     with get_db() as db:
+
         db.execute("""
             INSERT INTO settings(key, value)
             VALUES(?, ?)
+
             ON CONFLICT(key) DO UPDATE SET
                 value=excluded.value
-        """, (str(key), str(value)))
+        """, (
+            str(key),
+            str(value)
+        ))
 
 
 def is_bot_enabled():
-    return get_setting("bot_enabled", "1") == "1"
+
+    return (
+        get_setting(
+            "bot_enabled",
+            "1"
+        ) == "1"
+    )
 
 
 def set_bot_enabled(enabled):
+
     set_setting(
         "bot_enabled",
         "1" if enabled else "0"
     )
 
+
+# =========================================================
+# GAMES
+# =========================================================
 
 def create_game(
     game_id,
@@ -500,10 +608,13 @@ def create_game(
     message_id,
     user_id,
     game_type,
-    bet=0
+    amount=0
 ):
-    try:
-        with get_db() as db:
+
+    with get_db() as db:
+
+        try:
+
             db.execute("""
                 INSERT INTO games(
                     game_id,
@@ -511,7 +622,7 @@ def create_game(
                     message_id,
                     user_id,
                     game_type,
-                    bet
+                    amount
                 )
                 VALUES(?, ?, ?, ?, ?, ?)
             """, (
@@ -520,71 +631,41 @@ def create_game(
                 int(message_id),
                 int(user_id),
                 str(game_type),
-                int(bet),
+                int(amount)
             ))
 
-        return True
+            return True
 
-    except sqlite3.IntegrityError:
-        return False
+        except sqlite3.IntegrityError:
+
+            return False
+
+
+def finish_game(
+    game_id,
+    result
+):
+
+    with get_db() as db:
+
+        db.execute("""
+            UPDATE games
+            SET
+                status='finished',
+                result=?
+            WHERE game_id=?
+        """, (
+            str(result),
+            str(game_id)
+        ))
 
 
 def get_game(game_id):
+
     with get_db() as db:
+
         return db.execute("""
             SELECT *
             FROM games
             WHERE game_id=?
         """, (str(game_id),)).fetchone()
-
-
-def finish_game(game_id, result, payout=0):
-    with get_db() as db:
-        db.execute("BEGIN IMMEDIATE")
-
-        try:
-            game = db.execute("""
-                SELECT *
-                FROM games
-                WHERE game_id=?
-            """, (str(game_id),)).fetchone()
-
-            if game is None:
-                db.execute("ROLLBACK")
-                return {
-                    "success": False,
-                    "reason": "game_not_found",
-                }
-
-            if game["status"] == "finished":
-                db.execute("COMMIT")
-                return {
-                    "success": True,
-                    "duplicate": True,
-                    "payout": int(game["payout"]),
-                }
-
-            db.execute("""
-                UPDATE games
-                SET status='finished',
-                    result=?,
-                    payout=?,
-                    finished_at=CURRENT_TIMESTAMP
-                WHERE game_id=?
-            """, (
-                str(result),
-                int(payout),
-                str(game_id),
-            ))
-
-            db.execute("COMMIT")
-
-            return {
-                "success": True,
-                "duplicate": False,
-                "payout": int(payout),
-            }
-
-        except Exception:
-            db.execute("ROLLBACK")
-            raise
