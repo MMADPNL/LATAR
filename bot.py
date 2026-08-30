@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import uuid
+import random
 
 from telegram import Update
 from telegram.ext import (
@@ -39,9 +40,20 @@ logger = logging.getLogger(__name__)
 # تنظیمات
 # =========================================================
 
-MAX_ROUNDS = min(int(MAX_ROUNDS), 4)
+MAX_GAME_ROUNDS = min(int(MAX_ROUNDS), 4)
 
-GAMES = {
+# ضریب بازی با ربات
+BOT_GAME_MULTIPLIER = 2
+
+# ضریب لاتاری بسکتبال
+BASKETBALL_MULTIPLIER = 1.5
+
+
+# =========================================================
+# ایموجی بازی
+# =========================================================
+
+GAME_EMOJIS = {
     "تاس": "🎲",
     "دارت": "🎯",
     "بولینگ": "🎳",
@@ -137,7 +149,7 @@ async def check_join(update, context):
     if not user:
         return False
 
-    # مالک بدون بررسی عضویت
+    # مالک نیاز به بررسی عضویت ندارد
     if is_owner(user.id):
         return True
 
@@ -159,6 +171,7 @@ async def check_join(update, context):
             return True
 
     except Exception as e:
+
         logger.warning(
             "JOIN CHECK ERROR: %s",
             e,
@@ -177,7 +190,7 @@ async def check_join(update, context):
 # موجودی
 # =========================================================
 
-async def balance(update, context):
+async def show_balance(update, context):
 
     if not await check_join(update, context):
         return
@@ -186,18 +199,23 @@ async def balance(update, context):
 
     ensure_user(user)
 
-    amount = database.get_balance(
+    balance = database.get_balance(
         user.id
     )
 
     await update.effective_message.reply_text(
-        f"💰 موجودی شما:\n"
-        f"{money(amount)} {CURRENCY}"
+        "💰 موجودی شما:\n\n"
+        f"{money(balance)} {CURRENCY}"
     )
 
 
 # =========================================================
 # انتقال
+#
+# داخل گپ:
+# Reply روی پیام کاربر
+# انتقال 100
+# انتقال ۱۰۰
 # =========================================================
 
 async def transfer(update, context):
@@ -208,7 +226,6 @@ async def transfer(update, context):
     message = update.effective_message
     user = update.effective_user
 
-    # فقط گپ
     if message.chat.type == "private":
 
         await message.reply_text(
@@ -254,7 +271,7 @@ async def transfer(update, context):
     if len(parts) != 2:
 
         await message.reply_text(
-            "❌ مثال:\n"
+            "❌ مثال صحیح:\n"
             "انتقال 100"
         )
 
@@ -275,6 +292,7 @@ async def transfer(update, context):
     ensure_user(user)
     ensure_user(target)
 
+    # کلید ضدتکرار
     tx_key = (
         "transfer:"
         f"{message.chat_id}:"
@@ -317,13 +335,18 @@ async def transfer(update, context):
 
 # =========================================================
 # شارژ مالک
+#
+# فقط داخل گپ
+# فقط Reply
+# فقط مالک
+#
+# نتیجه شارژ در گپ نمایش داده نمی‌شود.
 # =========================================================
 
-async def charge(update, context):
+async def admin_charge(update, context):
 
     user = update.effective_user
 
-    # ضد دستور
     if not is_owner(user.id):
         return
 
@@ -332,7 +355,7 @@ async def charge(update, context):
     if message.chat.type == "private":
 
         await message.reply_text(
-            "❌ شارژ را داخل گپ و با Reply انجام بده."
+            "❌ شارژ را داخل گپ انجام بده."
         )
 
         return
@@ -371,7 +394,7 @@ async def charge(update, context):
     ensure_user(target)
 
     tx_key = (
-        "charge:"
+        "admin_charge:"
         f"{message.chat_id}:"
         f"{message.message_id}"
     )
@@ -386,8 +409,7 @@ async def charge(update, context):
     if not result["success"]:
         return
 
-    # نتیجه شارژ برای کاربر در گپ نمایش داده نمی‌شود.
-    # فقط مالک در PV نتیجه را می‌گیرد.
+    # نتیجه فقط برای مالک
     try:
 
         await context.bot.send_message(
@@ -409,7 +431,7 @@ async def charge(update, context):
 # کسر مالک
 # =========================================================
 
-async def deduct(update, context):
+async def admin_deduct(update, context):
 
     user = update.effective_user
 
@@ -421,7 +443,7 @@ async def deduct(update, context):
     if message.chat.type == "private":
 
         await message.reply_text(
-            "❌ کسر را داخل گپ و با Reply انجام بده."
+            "❌ کسر را داخل گپ انجام بده."
         )
 
         return
@@ -460,7 +482,7 @@ async def deduct(update, context):
     ensure_user(target)
 
     tx_key = (
-        "deduct:"
+        "admin_deduct:"
         f"{message.chat_id}:"
         f"{message.message_id}"
     )
@@ -502,10 +524,10 @@ async def deduct(update, context):
 
 
 # =========================================================
-# روشن
+# روشن / خاموش
 # =========================================================
 
-async def turn_on(update, context):
+async def admin_on(update, context):
 
     if not is_owner(
         update.effective_user.id
@@ -519,11 +541,7 @@ async def turn_on(update, context):
     )
 
 
-# =========================================================
-# خاموش
-# =========================================================
-
-async def turn_off(update, context):
+async def admin_off(update, context):
 
     if not is_owner(
         update.effective_user.id
@@ -542,13 +560,20 @@ async def turn_off(update, context):
 #
 # فرمت:
 #
-# 1 تاس 60
-# 2 تاس 60
-# 4 تاس 60
+# 1 تاس 100
+# 2 تاس 100
+# 4 تاس 100
 #
 # اول کاربر
 # بعد ربات
 # حداکثر 4 راند
+#
+# برد:
+# مبلغ بازی از قبل کسر نمی‌شود
+# مبلغ برد = مبلغ × 2
+#
+# باخت:
+# مبلغ بازی کسر می‌شود
 # =========================================================
 
 def parse_bot_game(text):
@@ -576,16 +601,19 @@ def parse_bot_game(text):
     if amount is None:
         return None
 
-    if game not in GAMES:
+    if game not in GAME_EMOJIS:
         return None
 
-    if rounds < 1 or rounds > MAX_ROUNDS:
+    if rounds < 1:
+        return None
+
+    if rounds > MAX_GAME_ROUNDS:
         return None
 
     return rounds, game, amount
 
 
-async def play_bot(update, context):
+async def play_bot_game(update, context):
 
     if not await check_join(
         update,
@@ -615,16 +643,16 @@ async def play_bot(update, context):
 
     ensure_user(user)
 
-    current_balance = database.get_balance(
+    balance_before = database.get_balance(
         user.id
     )
 
-    if current_balance < amount:
+    if balance_before < amount:
 
         await message.reply_text(
-            "❌ موجودی کافی نیست.\n"
+            "❌ موجودی کافی نیست.\n\n"
             f"💰 موجودی: "
-            f"{money(current_balance)} {CURRENCY}"
+            f"{money(balance_before)} {CURRENCY}"
         )
 
         return
@@ -643,12 +671,12 @@ async def play_bot(update, context):
     if not created:
 
         await message.reply_text(
-            "❌ بازی ایجاد نشد."
+            "❌ بازی قبلاً ثبت شده است."
         )
 
         return
 
-    emoji = GAMES[game]
+    emoji = GAME_EMOJIS[game]
 
     user_wins = 0
     bot_wins = 0
@@ -656,7 +684,11 @@ async def play_bot(update, context):
 
     result_lines = []
 
-    for round_no in range(
+    # =====================================================
+    # راندها
+    # =====================================================
+
+    for round_number in range(
         1,
         rounds + 1,
     ):
@@ -685,12 +717,12 @@ async def play_bot(update, context):
             reply_to_message_id=message.message_id,
         )
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
 
         bot_value = bot_roll.dice.value
 
         # ---------------------------------------------
-        # نتیجه
+        # نتیجه راند
         # ---------------------------------------------
 
         if user_value > bot_value:
@@ -709,55 +741,132 @@ async def play_bot(update, context):
             result = "🤝 مساوی"
 
         result_lines.append(
-            f"راند {round_no}: "
-            f"👤 {user_value} | "
-            f"🤖 {bot_value} "
-            f"→ {result}"
+            f"راند {round_number}\n"
+            f"👤 شما: {user_value}\n"
+            f"🤖 ربات: {bot_value}\n"
+            f"نتیجه: {result}"
         )
 
-    # ---------------------------------------------
-    # برنده نهایی
-    # ---------------------------------------------
+    # =====================================================
+    # نتیجه نهایی
+    # =====================================================
 
     if user_wins > bot_wins:
 
-        final_result = (
-            "🏆 شما برنده شدید!"
+        # ---------------------------------------------
+        # برد
+        # مبلغ از قبل کم نشده
+        # مبلغ برد 2 برابر اضافه می‌شود
+        # ---------------------------------------------
+
+        reward = int(
+            amount * BOT_GAME_MULTIPLIER
+        )
+
+        payment = database.add_balance(
+            user.id,
+            reward,
+            f"game:{game_id}:win",
+            f"برد {game}",
+        )
+
+        if not payment["success"]:
+
+            await message.reply_text(
+                "❌ خطا در ثبت برد."
+            )
+
+            return
+
+        database.finish_game(
+            game_id,
+            (
+                f"user={user_wins};"
+                f"bot={bot_wins};"
+                f"draw={draws};"
+                "WIN"
+            ),
+            reward,
+        )
+
+        final_text = (
+            "🏆 برنده شدی!\n\n"
+            f"➕ {money(reward)} {CURRENCY} اضافه شد.\n"
+            f"ℹ️ مبلغ بازی از حسابت کسر نشد.\n"
+            f"💳 موجودی جدید: "
+            f"{money(payment['balance'])} {CURRENCY}"
         )
 
     elif bot_wins > user_wins:
 
-        final_result = (
-            "🤖 ربات برنده شد!"
+        # ---------------------------------------------
+        # باخت
+        # مبلغ بازی کسر می‌شود
+        # ---------------------------------------------
+
+        loss = database.withdraw_balance(
+            user.id,
+            amount,
+            f"game:{game_id}:loss",
+            f"باخت {game}",
+        )
+
+        if not loss["success"]:
+
+            await message.reply_text(
+                "❌ خطا در کسر موجودی."
+            )
+
+            return
+
+        database.finish_game(
+            game_id,
+            (
+                f"user={user_wins};"
+                f"bot={bot_wins};"
+                f"draw={draws};"
+                "LOSS"
+            ),
+            0,
+        )
+
+        final_text = (
+            "❌ باختی.\n\n"
+            f"➖ {money(amount)} {CURRENCY} کسر شد.\n"
+            f"💳 موجودی جدید: "
+            f"{money(loss['balance'])} {CURRENCY}"
         )
 
     else:
 
-        final_result = (
-            "🤝 بازی مساوی شد!"
+        # ---------------------------------------------
+        # مساوی
+        # ---------------------------------------------
+
+        database.finish_game(
+            game_id,
+            (
+                f"user={user_wins};"
+                f"bot={bot_wins};"
+                f"draw={draws};"
+                "DRAW"
+            ),
+            0,
         )
 
-    database.finish_game(
-        game_id,
-        (
-            f"user={user_wins};"
-            f"bot={bot_wins};"
-            f"draw={draws}"
-        ),
-        0,
-    )
+        final_text = (
+            "🤝 مساوی شد.\n\n"
+            "💰 موجودی تغییر نکرد."
+        )
 
     await message.reply_text(
-        f"{emoji} بازی {game} با ربات\n\n"
-        + "\n".join(result_lines)
+        f"{emoji} {game} با ربات\n\n"
+        + "\n\n".join(result_lines)
         + "\n\n"
-        f"👤 بردهای شما: {user_wins}\n"
-        f"🤖 بردهای ربات: {bot_wins}\n"
+        f"📊 شما: {user_wins} برد\n"
+        f"🤖 ربات: {bot_wins} برد\n"
         f"🤝 مساوی: {draws}\n\n"
-        f"{final_result}\n\n"
-        f"💰 موجودی: "
-        f"{money(database.get_balance(user.id))} "
-        f"{CURRENCY}"
+        f"{final_text}"
     )
 
 
@@ -765,15 +874,24 @@ async def play_bot(update, context):
 # لاتاری
 #
 # تاس:
-# 60 زوج
-# 60 فرد
+# 300 زوج
+# 300 فرد
 #
 # بسکتبال:
-# 60 گل
-# 60 بیرون
+# 400 گل
+# 400 بیرون
 #
 # دارت:
-# فعلاً نتیجه عددی Telegram
+# 400 قرمز
+# 400 سفید
+#
+# در لاتاری فقط خود کاربر یک پرتاب می‌زند.
+#
+# برد:
+# مبلغ × ضریب اضافه می‌شود
+#
+# باخت:
+# مبلغ کسر می‌شود
 # =========================================================
 
 def parse_lottery(text):
@@ -794,30 +912,45 @@ def parse_lottery(text):
     if amount is None:
         return None
 
+    # -----------------------------
+    # تاس
+    # -----------------------------
+
     if choice in (
         "زوج",
         "فرد",
     ):
+
         return (
             "تاس",
             amount,
             choice,
         )
 
+    # -----------------------------
+    # بسکتبال
+    # -----------------------------
+
     if choice in (
         "گل",
         "بیرون",
     ):
+
         return (
             "بسکتبال",
             amount,
             choice,
         )
 
+    # -----------------------------
+    # دارت
+    # -----------------------------
+
     if choice in (
         "قرمز",
         "سفید",
     ):
+
         return (
             "دارت",
             amount,
@@ -827,7 +960,11 @@ def parse_lottery(text):
     return None
 
 
-async def lottery(update, context):
+# =========================================================
+# اجرای لاتاری
+# =========================================================
+
+async def play_lottery(update, context):
 
     if not await check_join(
         update,
@@ -857,6 +994,39 @@ async def lottery(update, context):
 
     ensure_user(user)
 
+    balance_before = database.get_balance(
+        user.id
+    )
+
+    if balance_before < amount:
+
+        await message.reply_text(
+            "❌ موجودی کافی نیست.\n\n"
+            f"💰 موجودی: "
+            f"{money(balance_before)} {CURRENCY}"
+        )
+
+        return
+
+    game_id = uuid.uuid4().hex
+
+    created = database.create_game(
+        game_id,
+        message.chat_id,
+        message.message_id,
+        user.id,
+        f"lottery:{game}:{choice}",
+        amount,
+    )
+
+    if not created:
+
+        await message.reply_text(
+            "❌ بازی قبلاً ثبت شده است."
+        )
+
+        return
+
     # =====================================================
     # تاس
     # =====================================================
@@ -881,34 +1051,15 @@ async def lottery(update, context):
 
         won = result == choice
 
-        if won:
+        multiplier = 2
 
-            result_text = (
-                "🏆 برنده شدی!"
-            )
-
-        else:
-
-            result_text = (
-                "❌ باختی!"
-            )
-
-        await message.reply_text(
-            "🎲 لاتاری تاس\n\n"
-            f"🎯 عدد: {value}\n"
-            f"👤 انتخاب: {choice}\n"
-            f"📊 نتیجه: {result}\n\n"
-            f"{result_text}\n"
-            f"💰 مبلغ: {money(amount)} {CURRENCY}"
-        )
-
-        return
+        game_title = "🎲 لاتاری تاس"
 
     # =====================================================
     # بسکتبال
     # =====================================================
 
-    if game == "بسکتبال":
+    elif game == "بسکتبال":
 
         roll = await context.bot.send_dice(
             chat_id=message.chat_id,
@@ -928,33 +1079,18 @@ async def lottery(update, context):
 
         won = result == choice
 
-        if won:
+        multiplier = BASKETBALL_MULTIPLIER
 
-            result_text = (
-                "🏆 برنده شدی!"
-            )
-
-        else:
-
-            result_text = (
-                "❌ باختی!"
-            )
-
-        await message.reply_text(
-            "🏀 لاتاری بسکتبال\n\n"
-            f"🎯 نتیجه پرتاب: {result}\n"
-            f"👤 انتخاب: {choice}\n\n"
-            f"{result_text}\n"
-            f"💰 مبلغ: {money(amount)} {CURRENCY}"
-        )
-
-        return
+        game_title = "🏀 لاتاری بسکتبال"
 
     # =====================================================
     # دارت
+    #
+    # Telegram عدد دارت را می‌دهد.
+    # برای لاتاری رنگ را به‌صورت تصادفی تعیین می‌کنیم.
     # =====================================================
 
-    if game == "دارت":
+    else:
 
         roll = await context.bot.send_dice(
             chat_id=message.chat_id,
@@ -966,24 +1102,102 @@ async def lottery(update, context):
 
         value = roll.dice.value
 
+        result = random.choice(
+            ["قرمز", "سفید"]
+        )
+
+        won = result == choice
+
+        multiplier = 2
+
+        game_title = "🎯 لاتاری دارت"
+
+    # =====================================================
+    # برد
+    # =====================================================
+
+    if won:
+
+        reward = int(
+            amount * multiplier
+        )
+
+        payment = database.add_balance(
+            user.id,
+            reward,
+            f"lottery:{game_id}:win",
+            f"برد لاتاری {game}",
+        )
+
+        if not payment["success"]:
+
+            await message.reply_text(
+                "❌ خطا در ثبت برد."
+            )
+
+            return
+
+        database.finish_game(
+            game_id,
+            f"WIN:{result}",
+            reward,
+        )
+
         await message.reply_text(
-            "🎯 لاتاری دارت\n\n"
-            f"🎯 عدد پرتاب: {value}\n"
-            f"👤 انتخاب: {choice}\n\n"
-            "⚠️ تلگرام برای دارت عدد پرتاب را "
-            "می‌دهد و رنگ قرمز/سفید را مستقیم "
-            "در API اعلام نمی‌کند.\n\n"
-            f"💰 مبلغ: {money(amount)} {CURRENCY}"
+            f"{game_title}\n\n"
+            f"👤 انتخاب شما: {choice}\n"
+            f"🎯 نتیجه: {result}\n\n"
+            "🏆 برنده شدی!\n\n"
+            f"➕ {money(reward)} {CURRENCY} اضافه شد.\n"
+            f"ℹ️ مبلغ بازی از حسابت کسر نشد.\n"
+            f"📈 ضریب: {multiplier}x\n"
+            f"💳 موجودی جدید: "
+            f"{money(payment['balance'])} {CURRENCY}"
         )
 
         return
+
+    # =====================================================
+    # باخت
+    # =====================================================
+
+    loss = database.withdraw_balance(
+        user.id,
+        amount,
+        f"lottery:{game_id}:loss",
+        f"باخت لاتاری {game}",
+    )
+
+    if not loss["success"]:
+
+        await message.reply_text(
+            "❌ خطا در کسر موجودی."
+        )
+
+        return
+
+    database.finish_game(
+        game_id,
+        f"LOSS:{result}",
+        0,
+    )
+
+    await message.reply_text(
+        f"{game_title}\n\n"
+        f"👤 انتخاب شما: {choice}\n"
+        f"🎯 نتیجه: {result}\n\n"
+        "❌ باختی!\n\n"
+        f"➖ {money(amount)} {CURRENCY} کسر شد.\n"
+        f"💳 موجودی جدید: "
+        f"{money(loss['balance'])} {CURRENCY}"
+    )
 
 
 # =========================================================
 # پنل مدیریت
 # =========================================================
 
-async def admin(update, context):
+async def admin_panel(update, context):
 
     if not is_owner(
         update.effective_user.id
@@ -999,11 +1213,13 @@ async def admin(update, context):
         "شارژ داخل گپ:\n"
         "Reply → شارژ 100\n\n"
         "کسر داخل گپ:\n"
-        "Reply → کسر 100"
+        "Reply → کسر 100\n\n"
+        "انتقال:\n"
+        "Reply → انتقال 100"
     )
 
 
-async def users(update, context):
+async def admin_users(update, context):
 
     if not is_owner(
         update.effective_user.id
@@ -1047,7 +1263,7 @@ async def users(update, context):
         )
 
 
-async def status(update, context):
+async def admin_status(update, context):
 
     if not is_owner(
         update.effective_user.id
@@ -1061,7 +1277,7 @@ async def status(update, context):
     )
 
     await update.effective_message.reply_text(
-        f"📊 وضعیت: {state}"
+        f"📊 وضعیت بات: {state}"
     )
 
 
@@ -1088,38 +1304,50 @@ async def start(update, context):
         "موجودی\n"
         "م\n\n"
 
-        "🔄 انتقال:\n"
+        "🔄 انتقال داخل گپ:\n"
         "Reply + انتقال 100\n\n"
 
+        "👑 شارژ مالک:\n"
+        "Reply + شارژ 100\n\n"
+
+        "👑 کسر مالک:\n"
+        "Reply + کسر 100\n\n"
+
         "🎲 بازی با ربات:\n"
-        "1 تاس 60\n"
-        "1 دارت 60\n"
-        "1 بولینگ 60\n"
+        "1 تاس 100\n"
+        "1 دارت 100\n"
+        "1 بولینگ 100\n"
         "حداکثر 4 راند\n\n"
 
         "🎲 لاتاری تاس:\n"
-        "60 زوج\n"
-        "60 فرد\n\n"
+        "300 زوج\n"
+        "300 فرد\n\n"
 
         "🎯 لاتاری دارت:\n"
-        "60 قرمز\n"
-        "60 سفید\n\n"
+        "300 قرمز\n"
+        "300 سفید\n\n"
 
         "🏀 لاتاری بسکتبال:\n"
-        "60 گل\n"
-        "60 بیرون\n\n"
+        "400 گل\n"
+        "400 بیرون\n\n"
 
-        f"💰 واحد: {CURRENCY}"
+        f"💰 واحد: {CURRENCY}\n"
+        "🛡️ سیستم ضدتکرار فعال است."
     )
 
 
 # =========================================================
 # ROUTER ضد دستور
 #
-# مهم:
-# هر پیام فقط یک بار پردازش می‌شود.
-# اول دستورهای خاص بررسی می‌شوند.
-# بعد فقط اولین تطابق اجرا می‌شود.
+# هر پیام فقط یک دستور را اجرا می‌کند.
+#
+# ترتیب:
+# 1 مالک
+# 2 موجودی
+# 3 انتقال
+# 4 بازی با ربات
+# 5 لاتاری
+# 6 هیچ کاری
 # =========================================================
 
 async def router(update, context):
@@ -1144,7 +1372,7 @@ async def router(update, context):
     )
 
     # =====================================================
-    # 1 - مالک
+    # مالک
     # =====================================================
 
     if is_owner(user.id):
@@ -1154,7 +1382,7 @@ async def router(update, context):
             "پنل مدیریت",
         ):
 
-            await admin(
+            await admin_panel(
                 update,
                 context,
             )
@@ -1163,7 +1391,7 @@ async def router(update, context):
 
         if text == "روشن":
 
-            await turn_on(
+            await admin_on(
                 update,
                 context,
             )
@@ -1172,7 +1400,7 @@ async def router(update, context):
 
         if text == "خاموش":
 
-            await turn_off(
+            await admin_off(
                 update,
                 context,
             )
@@ -1181,7 +1409,7 @@ async def router(update, context):
 
         if text == "کاربران":
 
-            await users(
+            await admin_users(
                 update,
                 context,
             )
@@ -1190,25 +1418,29 @@ async def router(update, context):
 
         if text == "وضعیت":
 
-            await status(
+            await admin_status(
                 update,
                 context,
             )
 
             return
 
-        if text.startswith("شارژ "):
+        if text.startswith(
+            "شارژ "
+        ):
 
-            await charge(
+            await admin_charge(
                 update,
                 context,
             )
 
             return
 
-        if text.startswith("کسر "):
+        if text.startswith(
+            "کسر "
+        ):
 
-            await deduct(
+            await admin_deduct(
                 update,
                 context,
             )
@@ -1216,7 +1448,7 @@ async def router(update, context):
             return
 
     # =====================================================
-    # 2 - موجودی
+    # موجودی
     # =====================================================
 
     if text in (
@@ -1224,7 +1456,7 @@ async def router(update, context):
         "موجودی",
     ):
 
-        await balance(
+        await show_balance(
             update,
             context,
         )
@@ -1232,10 +1464,12 @@ async def router(update, context):
         return
 
     # =====================================================
-    # 3 - انتقال
+    # انتقال
     # =====================================================
 
-    if text.startswith("انتقال "):
+    if text.startswith(
+        "انتقال "
+    ):
 
         await transfer(
             update,
@@ -1245,12 +1479,12 @@ async def router(update, context):
         return
 
     # =====================================================
-    # 4 - بازی با ربات
+    # بازی با ربات
     # =====================================================
 
     if parse_bot_game(text):
 
-        await play_bot(
+        await play_bot_game(
             update,
             context,
         )
@@ -1258,12 +1492,12 @@ async def router(update, context):
         return
 
     # =====================================================
-    # 5 - لاتاری
+    # لاتاری
     # =====================================================
 
     if parse_lottery(text):
 
-        await lottery(
+        await play_lottery(
             update,
             context,
         )
@@ -1271,15 +1505,15 @@ async def router(update, context):
         return
 
     # =====================================================
-    # هیچ دستوری نبود
-    # هیچ کاری نکن
+    # ضد دستور
+    # پیام ناشناخته = هیچ کاری نکن
     # =====================================================
 
     return
 
 
 # =========================================================
-# ERROR
+# ERROR HANDLER
 # =========================================================
 
 async def error_handler(
@@ -1323,17 +1557,19 @@ def main():
     application.add_handler(
         CommandHandler(
             "balance",
-            balance,
+            show_balance,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "admin",
-            admin,
+            admin_panel,
         )
     )
 
+    # فقط یک MessageHandler
+    # بنابراین هر پیام فقط یک بار وارد Router می‌شود.
     application.add_handler(
         MessageHandler(
             filters.TEXT
