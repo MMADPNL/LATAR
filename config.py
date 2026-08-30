@@ -1,25 +1,25 @@
 import os
 
-# توکن ربات را در Environment Variables با نام BOT_TOKEN قرار بده
+# توکن ربات
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# آیدی عددی مالک ربات را در Environment Variables با نام OWNER_ID قرار بده
+# آیدی عددی مالک
 OWNER_ID = 8552447077
 
-# کانال/گروه اجباری
+# عضویت اجباری
 FORCE_CHAT = "@LATAR_tek"
 
-# ارز داخلی بات
+# واحد موجودی مجازی
 CURRENCY = "DOGS"
 
-# ضریب‌ها
-LOTTERY_ODD_EVEN = 1.8
-LOTTERY_RED_WHITE = 1.8
-LOTTERY_GOAL_OUT = 1.5
-BOT_GAME = 2.0
+# ضریب‌ها فقط برای نمایش/امتیاز بازی
+DICE_MULTIPLIER = 1.8
+BOWLING_MULTIPLIER = 1.8
+DART_MULTIPLIER = 2.0
+BASKETBALL_MULTIPLIER = 1.5
 
-# حداکثر تعداد راند بازی با ربات
+# حداکثر راند
 MAX_ROUNDS = 4
 
-# مسیر دیتابیس دائمی
+# دیتابیس دائمی
 DATABASE_PATH = "data/database.db"
